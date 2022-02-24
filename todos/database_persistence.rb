@@ -14,9 +14,10 @@ class DatabasePersistence
 
   def format_lists(result)
     result.map do |tuple|
-      list_id = tuple["id"].to_i
-      todos = format_todos(list_id)
-      {id: list_id, name: tuple["name"], todos: todos}
+      { id: tuple["id"].to_i, 
+        name: tuple["name"],
+        todos_count: tuple["todos_count"].to_i,
+        todos_remaining_count: tuple["todos_remaining_count"].to_i }
     end
   end
 
@@ -26,17 +27,46 @@ class DatabasePersistence
   end
 
   def all_lists
-    sql = "SELECT * FROM lists"
+    sql = <<~SQL 
+      SELECT lists.*, 
+      COUNT(todos.id) AS todos_count,
+      COUNT(NULLIF(todos.completed, true)) AS todos_remaining_count
+      FROM lists 
+      LEFT OUTER JOIN todos
+      ON lists.id = todos.list_id
+      GROUP BY lists.id
+      ORDER BY lists.name;
+    SQL
+    
     result = query(sql)
 
     format_lists(result)
   end
 
   def find_list(id)
-    sql = "SELECT * FROM lists WHERE id = $1"
+    sql = <<~SQL 
+      SELECT lists.*, 
+      COUNT(todos.id) AS todos_count,
+      COUNT(NULLIF(todos.completed, true)) AS todos_remaining_count
+      FROM lists 
+      LEFT OUTER JOIN todos
+      ON lists.id = todos.list_id
+      WHERE lists.id = $1
+      GROUP BY lists.id
+      ORDER BY lists.name;
+    SQL
+
     result = query(sql, id)
+    tuple = result.first
     
-    format_lists(result).first
+    list_id = tuple[:id].to_i
+    todos = fetch_todos(list_id)
+
+    { id: tuple["id"].to_i, 
+      name: tuple["name"],
+      todos: todos,
+      todos_count: tuple["todos_count"].to_i,
+      todos_remaining_count: tuple["todos_remaining_count"].to_i }
   end
 
   def create_new_list(list_name)
@@ -49,7 +79,6 @@ class DatabasePersistence
     query(sql, id)
     sql = "DELETE FROM lists WHERE id = $1;"
     query(sql, id)
-    # @session[:lists].reject! { |list| list[:id] == id }
   end
 
   def update_list_name(id, new_name)
@@ -65,8 +94,6 @@ class DatabasePersistence
   def delete_todo_from_list(list_id, todo_id)
     sql = "DELETE FROM todos WHERE id = $1 AND list_id = $2;"
     query(sql, todo_id, list_id)
-    # list = find_list(list_id)
-    # list[:todos].reject! { |todo| todo[:id] == todo_id }
   end
 
   def update_todo_status(list_id, todo_id, new_status)
