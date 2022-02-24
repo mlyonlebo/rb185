@@ -1,0 +1,166 @@
+#! /usr/bin/env ruby
+
+require "pg"
+require "io/console"
+
+class ExpenseData
+  attr_reader :connection
+
+  def initialize
+    @connection = PG.connect(dbname: "expenses")
+    setup_schema
+  end
+
+  def setup_schema
+    sql = "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = 'expenses' AND table_schema = 'public'"
+    result = connection.exec(sql)
+
+    unless result.field_values('count')[0].to_i == 1
+      sql = <<~SCHEMA
+      
+      CREATE TABLE public.expenses (
+        id integer NOT NULL,
+        amount numeric(6,2) NOT NULL,
+        memo text NOT NULL,
+        created_on date DEFAULT CURRENT_DATE NOT NULL,
+        CONSTRAINT valid_amount CHECK ((amount > (0)::numeric))
+      );"
+
+      SCHEMA
+      connection.exec(sql)
+    end
+  end
+
+  def display_help
+    puts <<~HELP
+    An expense recording system
+  
+    Commands:
+  
+    add AMOUNT MEMO [DATE] - record a new expense
+    clear - delete all expenses
+    list - list all expenses
+    delete NUMBER - remove expense with id NUMBER
+    search QUERY - list expenses with a matching memo field
+    HELP
+  end
+  
+  def list_expenses
+    sql = "SELECT * FROM expenses ORDER BY created_on"
+    result = connection.exec(sql);
+    
+    display_expenses_and_count(result)
+  end
+
+  def display_expenses_and_count(result)
+    result_count = result.ntuples
+    
+    if result_count > 0
+      puts "There are #{result_count} expenses."
+      display_expenses(result)
+    else
+      puts "There are no expenses."
+    end
+  end
+
+  def display_expenses(result)
+    result.each do |row|
+      columns = [ row["id"].rjust(3),
+                  row["created_on"].rjust(10),
+                  row["amount"].rjust(12),
+                  row["memo"]
+                ]
+      puts columns.join(' | ')
+    end
+    display_total(result)
+  end
+
+  def display_total(result)
+    puts "-" * 50
+
+    total = result.field_values("amount").map(&:to_f).inject(:+)
+    puts "Total #{total.to_s.rjust(25)}"
+  end
+  
+  def add_expense(amount, memo)
+    created_on = Date.today
+  
+    sql = "INSERT INTO expenses (amount, memo, created_on) VALUES ($1, $2, $3);"
+  
+    connection.exec_params(sql, [amount, memo, created_on])
+  end
+
+  def search(query)
+    sql = "SELECT * FROM expenses WHERE memo ILIKE $1;"
+
+    result = connection.exec_params(sql, [query])
+    display_expenses_and_count(result)
+  end
+
+  def delete(id)
+    sql = "SELECT * FROM expenses WHERE id = $1"
+    result = connection.exec_params(sql, [id])
+    result_count = result.ntuples
+
+    if result_count == 1      
+      puts "The following expense has been deleted:"
+      display_expenses(result)
+      sql = "DELETE FROM expenses WHERE id = $1"
+      connection.exec_params(sql, [id])
+    elsif result_count == 0
+      puts "There is no expense with the id '#{id}'."
+    end
+  end
+
+  def validate_clear_command
+    input = ''
+    loop do 
+      puts "This will remove all expense. Are you sure? (y/n)"
+      input = $stdin.getch
+      break if input == 'y' || input == 'n'
+      puts "You are valid, friend, but that input is not."
+    end
+    input
+  end
+
+  def clear_expenses
+    input = validate_clear_command
+    if input == 'y'
+      puts "All expenses have been deleted."
+
+      sql = "DELETE FROM expenses;"
+      connection.exec(sql)
+    end
+  end
+end
+
+class CLI
+  attr_reader :application
+  
+  def initialize
+    @application = ExpenseData.new
+  end
+  
+  def run(args)
+    command = args.first
+    if command == 'list'
+      application.list_expenses
+    elsif command == 'add'
+      amount, memo = args[1, 2]
+      abort "You must provide an amount and memo." unless amount && memo
+      application.add_expense(amount, memo)
+    elsif command == 'search'
+      query = args[1]
+      application.search(query)
+    elsif command == 'delete'
+      id = args[1]
+      application.delete(id)
+    elsif command == 'clear'
+      application.clear_expenses
+    else
+      application.display_help
+    end
+  end
+end
+
+CLI.new.run(ARGV)
